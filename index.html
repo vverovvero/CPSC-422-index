@@ -1,0 +1,123 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<html>
+	<head>
+		<meta http-equiv="CONTENT-TYPE" content="text/html; charset=utf-8">
+		<title> Video Mode in mCertiKOS </title>
+		<link rel="stylesheet" type="text/css" href="style.css">
+	</head>
+	<body>
+		<h1>Video Mode in mCertiKOS </h1>
+		<p> Wendy Chen <br>
+			Partner: Joe Li <br>
+			CPSC 422 Final Project, Fall 2016
+		</p>
+
+		<iframe src="https://player.vimeo.com/video/197585376" width="640" height="360" frameborder="0" webkitallowfullscreen mozallowfullscreen allowfullscreen></iframe>
+	
+		<p>
+			<b> Abstract </b>
+		</p>
+		
+		<p>
+		mCertiKOS is a branch of a verified operating system developed at Yale.  In CPSC 422 Operating Systems, each of our labs involved learning about a particular abstraction and implementing it in provided skeleton layers from mCertiKOS.  For our final project, we chose to expose video mode to the user, to enable graphics like animation.  Exposing video mode involves switching the VGA mode in BIOS, and then allowing the user to write directly to video memory.  The following details are taken from our README.  Joe was responsible for Memory Mapping and Fonts, and Wendy was responsible for Color Planes and Animation.
+		</p>	
+
+		<p>
+			<b> BIOS </b>
+		</p>
+
+		<p>
+		In the bootloader, we modified the assembly code to switch from a text mode to a colored graphics mode (0x12 VGA 640*480 16 color).
+		</p>
+
+		<p>
+			<b> Memory Mapping and Fonts </b>
+		</p>
+
+		<p>
+		We created a system call in sysfile.c that uses map_page and the starting physical address of VGA memory as given in the specs to map a buffer in userspace onto VGA. This allows up to write directly to that region of memory. We require a total buffer size of 38400 to map the entirety of the VGA display into the userspace. The actual segment of VGA is much larger than that, but for the resolution with which we were tasked in the assignment, we only require that much space and 10 pages in memory. We then declare a struct in vga.h in which we have the buffer as well as values to keep track of the current cursor position of the screen. We needed to align the buffer by the page size (4096) to make the display print in a regular shape. At the start of the user process, we use the function screen_init() which performs the memory mapping via a system call and initialised the curosor the start of the screen.
+		</p>
+
+		<p>
+		As per the Piazza post, we reversed the order of the font.h file that was provided in the link on the assignment to avoid printing the characters backwards. For writing to VGA, we mirrored the implementation of the video_putc() command in video.c, except we "drew" each character block by block as we printed it. Since each byte actually represents 8 pixels, we needed to iterate through each of the blocks of 8 when we printed a character and print the correct element as stored in the font.h file that contains the font information. We recognise that the row width is 80 (640 / 8) in terms of number of characters. We index the number of rows by the number of characters and the height by the number of pixels, as this makes it easier to iterate through the block of 8 and draw the individual pixels. When we have reached the end of the row, we increase the height by 8 and set the width to 0 to start at the beginning of the next row. For other special characters, we have specific operations in video_putc(). For the backspace, we overwrite the current character and move the cursor back one position. For tab, we print 5 blank characters. For the carriage return, we move the cursor back to the start of the line. For newline, we move the cursor to the start of the next line. 
+		</p>
+
+		<p>
+		We must consider that we may run out of space on the display to print new characters. When we have reached the end (with height > 472), we need to scroll up one line to allow new text to be printed. Here, we use memmove to move the entire buffer starting from the second line to the start of the buffer, overwriting the first line and providing space for another line to be added. We also decrement the height variable by 8 (number of pixels needed to write a character) and keep prompting the user for input.  In the user process, we use the readline() function to prompt the user for input. Since readline doesn't store special characters, we need to manually add in a new line after each line has been printed out. However, the vga_putc() function works for all the same characters that video_putc() does, and we can print out a file or a string stored in the userspace entirely.
+		</p>
+
+		<p>
+			<b> Color Planes and Animation </b>
+		</p>
+
+		<p>
+		Our VGA mode (640 x 480, 16-color) relies on the use of four color planes.  The color of each pixel is determined by combining the value at the same bit position in each color plane.  Thus, we can obtain 2^4 (16) different colors.  In vga.h, we declare an array PLANE[4] that contains the addresses of all four color planes, and we declare an array COLOR_BIT_MASK[4] to contain the bit masks we will use when when decoding the color for a pixel.  The colors are defined as an enum, ranging from values 0x0 to 0xf.
+		</p>
+
+		<p>
+		Because 8 pixels are represented at once in one byte, we have decided to color the screen in units of patches.  We define a patch as 64 pixels in area, or one byte by 8 rows.  (Think of the screen where a row is measured as 80 bytes, and height is measured in chunks of 8 rows at a time.  Thus, we have a total of 80 x 60 patches in the screen).  When we color a patch, we iterate over all four color planes, performing an &-operation between the desired color and the current bit mask to determine whether or not to set the bit as filled or not.  We define this function that colors one patch as vga_color_patch in vga.c.
+		</p>
+
+		<p> 
+		We represent a sprite as a 2-dimensional array of color patches.  Using vga_draw, we draw a sprite to the screen by specifying the (x, y) screen position we would like to start drawing at, and by specifying the width and height of the sprite.  We measure the (x, y) screen position where x is which byte along the row, taking values from 0 to 79, and y is which chunk alongthe column, taking values from 0 to 59.  
+		</p>
+
+		<p>
+		To allow for animation, we must implement a timer that lets us define consistent intervals to use as a frame length before rendering the next sprite.  The timer is implemented by using the lapic timer interrupt.  In kern/thread/PThread/PThread.c, we keep a global vga_delay_count that is initialized as 0, and we keep a vga_frame_length set to the desired time interval.  We create a function vga_delay_update that regularly updates the value of vga_delay_count because it gets called by the trap handler's timer interrupt handler.  We know that the timer will be updated consistently because the lapic timer interrupt is sent 1000 times per second.  Also in PThread.c, we have a getter function vga_delay_fetch that returns the current time held in vga_delay_count.
+		</p>
+
+		<p>
+		Now that we have a method for keeping time in intervals, we simply need to check this timer, and when we get a value that is equal to or exceeds the frame length, we know it is appropriate to render the next frame.  We create a system call sys_vga_delay in kern/fs/sysfile.c that calls vga_delay_fetch and returns the timer value to the user.  Then, in vga.c, we implement a frame delay in vga_delay, by using a while loop to call sys_vga_delay until the desired time interval has elapsed.
+		</p>
+
+		<p>
+		To separate frames in our animations, then, we simply insert calls to vga_delay between frames.  Our animations animate_mario and animate_clouds make use of timer delays of different lengths.
+		</p>
+
+		<p>
+			<b> Demo </b>
+		</p>
+
+		<p>
+		We have modified user/idle/idle.c to spawn process pong.c.  We have modified user/pingpong/pong.c to run a program that displays what we have implemented in video mode.  The process first initializes the screen, which involves making a memory mapping from the VGA buffer's kernel space address to the user space.  The process then runs in a while loop, reading the user's input.  If the input matches one of our special commands "mario" or "clouds", an animation is displayed.  We return to text mode as soon as the animation finishes, and the video display retains the text that the user had typed before the animation played.
+		</p>
+
+		<p>
+			<b> Files Modified or Created </b>
+		</p>
+
+		<p>
+		Files modified for user process: <br>
+		user/idle/idle.c <br>
+		user/pingpong/pong.c <br>
+		</p>
+
+		<p>
+		Files modified for system calls: <br>
+		kern/fs/sysfile.c <br>
+		kern/fs/sysfile.h <br>
+		kern/lib/syscall.h <br>
+		kern/trap/TDispatch/TDispatch.c <br>
+		kern/trap/TTrapHandler/TTrapHandler.c <br>
+		kern/thread/PThread/PThread.c <br>
+		kern/thread/PThread/export.h <br>
+		user/include/syscall.h <br>
+		</p>
+
+		<p>
+		Files created for video display: <br>
+		user/lib/vga.c <br>
+		user/include/vga.h <br>
+		user/include/font.h <br>
+		user/include/sprites.h <br>
+		</p>
+
+		<p>
+			<b> Source Code: </b>
+		</p>
+		<p> Private due to nature of class.  Please contact wendy.w.chen@yale.edu for code sample.
+		</p>
+
+	</body>
+</html>
+
